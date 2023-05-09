@@ -4,6 +4,8 @@ aws cloudformation deploy --stack-name WordPressServer --template-file main.yml 
 
 if %errorlevel% == 0 (
   aws cloudformation list-exports --query "Exports[?Name=='WordPressServer-ServerPublicIP'].Value"
+  echo "≧◠‿◠≦"
 ) else (
   echo "Ha fallado"
+  echo "( ˘︹˘ )"
 )

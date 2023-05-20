@@ -1,0 +1,65 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Grupo de Seguridad interno para la pila <Nombre de la pila>
+Parameters:
+  EC2InstanceType:
+    Type: String
+    Default: "t2.small"
+    AllowedValues: ["t2.nano", "t2.micro", "t2.small", "t2.medium", "t2.large"]
+    Description: Default value "t2.small"
+  EC2ami:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: "/aws/service/canonical/ubuntu/server/20.04/stable/current/amd64/hvm/ebs-gp2/ami-id"
+    Description: ami para WordPressServer
+Resources:
+  WebSecurityGroupLM:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "Grupo de Seguridad interno para la pila ${AWS::StackName}"
+      GroupName: "WebSecurityGroupLM"
+      SecurityGroupIngress:
+      - IpProtocol: TCP
+        FromPort: 22
+        ToPort: 22
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: TCP
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: TCP
+        FromPort: 443
+        ToPort: 443
+        CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: "Name"
+          Value: !Join ["-", [!Ref "AWS::StackName", !Ref "AWS::AccountId"]]
+  WordPressServer:
+    Type: AWS::EC2::Instance
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT7M
+        Count: 1
+    Properties:
+      ImageId: !Ref EC2ami
+      InstanceType: !Ref EC2InstanceType
+      KeyName: vockey
+      IamInstanceProfile: LabInstanceProfile
+      SecurityGroupIds: 
+        - !Ref WebSecurityGroupLM
+      Tags:
+        - Key: "Name"
+          Value: !Join ["-", [!Ref "AWS::StackName", !Ref "AWS::AccountId"]]
+    UserData:
+      Fn::Base64: !Sub |
+        #!bin/bash xe
+        yum update -y
+        yum install -y httpd wget php-fpm php-mysqli php-json php php-devel
+        yum install mariadb105
+        systemctl start httpd
+        systemctl enable httpd
+        /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource WordPressServer --region ${AWS::Region}
+Outputs:
+  InstanceId:
+    Description: Id de la instancia de EC2
+    Value: !Ref WordPressServer
+    Export:
+      Name: InnstanceId

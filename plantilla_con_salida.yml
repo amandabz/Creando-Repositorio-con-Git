@@ -50,13 +50,14 @@ Resources:
           Value: !Join ["-", [!Ref "AWS::StackName", !Ref "AWS::AccountId"]]
     UserData:
       Fn::Base64: !Sub |
-        #!bin/bash xe
-        yum update -y
-        yum install -y httpd wget php-fpm php-mysqli php-json php php-devel
-        yum install mariadb105
-        systemctl start httpd
-        systemctl enable httpd
-        /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource WordPressServer --region ${AWS::Region}
+          !/bin/bash 
+          exec > /tmp/install.log 2 / & 1
+          sudo dnf update -y 
+          sudo dnf install -y httpd wget php-fpm php-mysqli php-json php php-devel
+          sudo dnf install -y mariadb105-server
+          sudo systemctl start httpd 
+          sudo systemctl enable httpd  
+          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --region ${AWS::Region} --resource WordPressServer
 Outputs:
   InstanceId:
     Description: Id de la instancia de EC2

@@ -34,6 +34,10 @@ Resources:
           Value: !Join ["-", [!Ref "AWS::StackName", !Ref "AWS::AccountId"]]
   WordPressServer:
     Type: AWS::EC2::Instance
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT7M
+        Count: 1
     Properties:
       ImageId: !Ref EC2ami
       InstanceType: !Ref EC2InstanceType
@@ -44,13 +48,19 @@ Resources:
       Tags:
         - Key: "Name"
           Value: !Join ["-", [!Ref "AWS::StackName", !Ref "AWS::AccountId"]]
+    UserData:
+      Fn::Base64: !Sub |
+          !/bin/bash 
+          exec > /tmp/install.log 2 / & 1
+          sudo dnf update -y 
+          sudo dnf install -y httpd wget php-fpm php-mysqli php-json php php-devel
+          sudo dnf install -y mariadb105-server
+          sudo systemctl start httpd 
+          sudo systemctl enable httpd  
+          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --region ${AWS::Region} --resource WordPressServer
 Outputs:
   InstanceId:
     Description: Id de la instancia de EC2
     Value: !Ref WordPressServer
     Export:
       Name: InnstanceId
-  ServerPublicIP:
-    Value: !Sub "http://${WordPressServer.PublicDnsName}:80"
-    Export:
-      Name: ServerPublicIP

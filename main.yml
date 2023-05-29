@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Grupo de Seguridad interno para la pila <Nombre de la pila>
+Description: Pila YML con base de datos mariadb, WordPressServer y Outputs.
 Parameters:
   EC2InstanceType:
     Type: String
@@ -8,59 +8,147 @@ Parameters:
     Description: Default value "t2.small"
   EC2ami:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
-    Default: "/aws/service/canonical/ubuntu/server/20.04/stable/current/amd64/hvm/ebs-gp2/ami-id"
+    Default: "/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2"
     Description: ami para WordPressServer
+
 Resources:
+# Grupo de Seguridad para la pila
   WebSecurityGroupLM:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: !Sub "Grupo de Seguridad interno para la pila ${AWS::StackName}"
       GroupName: "WebSecurityGroupLM"
       SecurityGroupIngress:
-      - IpProtocol: TCP
-        FromPort: 22
-        ToPort: 22
-        CidrIp: 0.0.0.0/0
-      - IpProtocol: TCP
-        FromPort: 80
-        ToPort: 80
-        CidrIp: 0.0.0.0/0
-      - IpProtocol: TCP
-        FromPort: 443
-        ToPort: 443
-        CidrIp: 0.0.0.0/0
+        - IpProtocol: TCP
+          FromPort: 22 # Puerto utilizado por el protocolo SSH
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: TCP
+          FromPort: 80 # Puerto utilizado por el protocolo HTTP
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: TCP
+          FromPort: 443 # Puerto estándar para la comunicación segura con el navegador web
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
       Tags:
         - Key: "Name"
           Value: !Join ["-", [!Ref "AWS::StackName", !Ref "AWS::AccountId"]]
+
+# Grupo de seguridad para la base de datos
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "Grupo de Seguridad interno para base de datos de la pila ${AWS::StackName}"
+      GroupName: DBSecurityGroup
+      SecurityGroupIngress:
+      - IpProtocol: TCP
+        FromPort: 3306 # Puerto por defecto para el protocolo MySQL
+        ToPort: 3306
+        SourceSecurityGroupName: !Ref WebSecurityGroupLM
+      Tags: 
+      - Key: "Name"
+        Value: !Join ["-", [!Ref "AWS::StackName", !Ref "AWS::AccountId"]]
+
+# Creación de la Base de datos
+  WordPressDatabase:
+    Type: 'AWS::RDS::DBInstance'
+    Properties:
+      DBInstanceIdentifier: mariadb-Amanda
+      DBName: db_mariadb
+      DBInstanceClass: db.t3.micro
+      AllocatedStorage: '15'
+      Engine: mariadb
+      EngineVersion: "10.6.10"
+      MasterUsername: admin
+      MasterUserPassword: "admin1234"
+      VPCSecurityGroups:
+        - !GetAtt DBEC2SecurityGroup.GroupId
+        - !GetAtt WebSecurityGroupLM.GroupId
+
+# Creación WordPresServer
   WordPressServer:
     Type: AWS::EC2::Instance
-    CreationPolicy:
-      ResourceSignal:
-        Timeout: PT7M
-        Count: 1
     Properties:
       ImageId: !Ref EC2ami
       InstanceType: !Ref EC2InstanceType
       KeyName: vockey
       IamInstanceProfile: LabInstanceProfile
-      SecurityGroupIds: 
+      SecurityGroupIds:
         - !Ref WebSecurityGroupLM
       Tags:
         - Key: "Name"
           Value: !Join ["-", [!Ref "AWS::StackName", !Ref "AWS::AccountId"]]
-    UserData:
-      Fn::Base64: !Sub |
-          !/bin/bash 
-          exec > /tmp/install.log 2 / & 1
-          sudo dnf update -y 
-          sudo dnf install -y httpd wget php-fpm php-mysqli php-json php php-devel
-          sudo dnf install -y mariadb105-server
-          sudo systemctl start httpd 
-          sudo systemctl enable httpd  
-          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --region ${AWS::Region} --resource WordPressServer
+      UserData: 
+          Fn::Base64: !Sub |
+              #!/bin/bash -xe
+              exec > /tmp/install.log 2>&1
+
+              # Instalar pila LAMP
+              sudo dnf update -y
+              sudo dnf install -y httpd wget php-fpm php-mysqli php-json php php-devel
+              sudo dnf install -y httpd mariadb105
+              sudo systemctl start httpd
+              sudo systemctl enable httpd
+              /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource WordPressServer --region ${AWS::Region}
+              
+              # Instalar WordPress
+              sudo wget https://wordpress.org/latest.tar.gz
+              sudo tar -xzf latest.tar.gz
+              sudo chown ec2-user:ec2-user wordpress
+
+              # Permisos para Apache
+              sudo usermod -a -G apache ec2-user
+              sudo chown -R ec2-user:apache /var/www
+              sudo chmod 2775 /var/www && find /var/www -type d -exec sudo chmod 2775 {} \;
+              find /var/www -type f -exec sudo chmod 0664 {} \;
+
+              # Editar archivo
+              sudo cp /wordpress/wp-config-sample.php /wordpress/wp-config.php 
+              cd /wordpress
+              sudo sed -i 's/database_name_here/wordpress-db-Amanda/' wp-config.php
+              sudo sed -i 's/username_here/username-Amanda/' wp-config.php 
+              sudo sed -i 's/password_here/password-Amanda/' wp-config.php 
+              sudo sed -i 's/localhost/${WordPressDatabase.Endpoint.Address}/' wp-config.php
+
+              # Comprobar los permisos
+              sudo mv /wordpress/* /var/www/html
+
+              # Seguridad de la base de datos
+              # Make sure that NOBODY can access the server without a password 
+              sudo mysql -e "UPDATE mysql.user SET Password = PASSWORD('CHANGEME') WHERE User = 'root'" 
+              # Kill the anonymous users 
+              sudo mysql -e "DROP USER ''@'localhost'" 
+              # Because our hostname varies we'll use some Bash magic here. 
+              sudo mysql -e "DROP USER ''@'$(hostname)'" 
+              # Kill off the demo database
+              sudo mysql -e "DROP DATABASE test" 
+              # Make our changes take effect 
+              sudo mysql -e "FLUSH PRIVILEGES"
+
+              # Crear la base de datos
+              sudo systemctl start mariadb httpd
+              sudo systemctl enable mariadb httpd
+              sudo mysql -u root -p "admin1234" -P 3306 -h ${WordPressDatabase.EndPoint.Address} [--protocol=TCP]
+              sudo mysql -u root -p "admin1234" -P 3306 -h ${WordPressDatabase.EndPoint.Address} [--protocol=TCP] -e "CREATE USER 'wpuser-Amanda'@'localhost' IDENTIFIED BY 'admin1234'";
+              sudo mysql -u root -p "admin1234" -P 3306 -h ${WordPressDatabase.EndPoint.Address} [--protocol=TCP] -e "CREATE DATABASE 'wordpress-db-Amanda'";
+              sudo mysql -u root -p "admin1234" -P 3306 -h ${WordPressDatabase.EndPoint.Address} [--protocol=TCP] -e "GRANT ALL PRIVILEGES ON 'wordpress-db-Amanda'.* TO "wpuser"@"localhost"";
+              sudo mysql -u root -p "admin1234" -P 3306 -h ${WordPressDatabase.EndPoint.Address} [--protocol=TCP] -e "UPDATE mysql.user SET Password = PASSWORD('CHANGEME') WHERE User = 'root'"
+              sudo mysql -u root -p "admin1234" -P 3306 -h ${WordPressDatabase.EndPoint.Address} [--protocol=TCP] -e "DROP USER 'wpuser-Amanda'@'localhost'" 
+              sudo mysql -u root -p "admin1234" -P 3306 -h ${WordPressDatabase.EndPoint.Address} [--protocol=TCP] -e "DROP USER 'wpuser-Amanda'@'$(hostname)'" 
+              sudo mysql -u root -p "admin1234" -P 3306 -h ${WordPressDatabase.EndPoint.Address} [--protocol=TCP] -e "DROP DATABASE wordpress-db-Amanda" 
+              sudo mysql -u root -p "admin1234" -P 3306 -h ${WordPressDatabase.EndPoint.Address} [--protocol=TCP] -e "FLUSH PRIVILEGES";
+              exit
+
+              sudo service httpd restart
 Outputs:
   InstanceId:
     Description: Id de la instancia de EC2
     Value: !Ref WordPressServer
-    Export:
-      Name: InnstanceId
+    Export: 
+      Name: InstanceId
+  ServerPublicIP:
+    Description: 'DNS publica del servidor y puerto'
+    Value: !Sub 'http://${WordPressServer.PublicDnsName}:80'
+    Export: 
+      Name: ServerPublicIP
